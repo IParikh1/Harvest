@@ -1,4 +1,6 @@
-# Byte-compiled / optimized / DLL files
+# --------------------
+# Python
+# --------------------
 __pycache__/
 *.py[cod]
 *$py.class
@@ -58,3 +60,24 @@ dmypy.json
 # Mac/Linux/Windows OS junk
 .DS_Store
 Thumbs.db
+
+# --------------------
+# Docker
+# --------------------
+# Ignore Docker-related files that shouldn't be committed
+**/Dockerfile~
+**/docker-compose*.override.yml
+docker-compose.override.yml
+
+# Docker volumes and build output
+**/volume-data/
+**/tmp/
+**/.docker/
+
+# Docker local env
+.dockerignore
+.docker/
+
+# Docker logs
+docker-logs/
+*.log
