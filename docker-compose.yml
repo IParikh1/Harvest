@@ -1,0 +1,18 @@
+# docker-compose.yml
+version: '3.8'
+
+services:
+  api:
+    build: .
+    ports:
+      - "8000:8000"
+    volumes:
+      - .:/code
+    command: uvicorn fastapi_app.main:app --host 0.0.0.0 --reload
+  redis:
+    image: redis
+  worker:
+    build: .
+    command: celery -A pipeline.tasks.harvest_jobs worker --loglevel=info
+    depends_on:
+      - redis
