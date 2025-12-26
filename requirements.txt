@@ -10,6 +10,12 @@ requests>=2.31.0
 # Environment Configuration
 python-dotenv>=1.0.0
 
+# Redis (task persistence)
+redis>=5.0.0
+
+# Rate Limiting
+slowapi>=0.1.9
+
 # Optional: OpenAI fallback
 # openai>=1.0.0
 

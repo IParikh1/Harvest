@@ -14,7 +14,16 @@ OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")
 
 # Redis Configuration
 REDIS_URL = os.getenv("REDIS_URL", "redis://localhost:6379/0")
+TASK_TTL_SECONDS = int(os.getenv("TASK_TTL_SECONDS", 86400 * 7))  # 7 days default
 
 # API Configuration
 API_TITLE = "Harvest API"
 API_VERSION = "1.0.0"
+
+# Security Configuration
+API_KEYS = [k.strip() for k in os.getenv("API_KEYS", "").split(",") if k.strip()]
+RATE_LIMIT = os.getenv("RATE_LIMIT", "100/minute")
+
+# Input Validation
+MAX_SOURCE_LENGTH = int(os.getenv("MAX_SOURCE_LENGTH", 50000))  # 50KB
+MAX_QUERY_LENGTH = int(os.getenv("MAX_QUERY_LENGTH", 1000))

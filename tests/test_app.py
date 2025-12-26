@@ -15,7 +15,8 @@ from fastapi_app.services.task_store import (
     complete_task,
     fail_task,
     update_task_status,
-    _task_store
+    clear_tasks,
+    _memory_store
 )
 from fastapi_app.models.schemas import TaskStatus
 from fastapi_app.services.llm_service import run_ollama, LLMServiceError, check_ollama_health
@@ -29,24 +30,36 @@ class TestHealthEndpoint:
     def test_health_check_returns_200(self):
         """Health endpoint should return 200."""
         with patch('fastapi_app.api.routes.check_ollama_health', return_value=True):
-            response = client.get("/health")
-            assert response.status_code == 200
+            with patch('fastapi_app.api.routes.check_redis_health', return_value=True):
+                response = client.get("/health")
+                assert response.status_code == 200
 
     def test_health_check_shows_ollama_status(self):
         """Health check should report Ollama availability."""
         with patch('fastapi_app.api.routes.check_ollama_health', return_value=True):
-            response = client.get("/health")
-            data = response.json()
-            assert "ollama_available" in data
-            assert data["ollama_available"] is True
+            with patch('fastapi_app.api.routes.check_redis_health', return_value=True):
+                response = client.get("/health")
+                data = response.json()
+                assert "ollama_available" in data
+                assert data["ollama_available"] is True
 
     def test_health_check_degraded_when_ollama_down(self):
         """Health should be degraded when Ollama is unavailable."""
         with patch('fastapi_app.api.routes.check_ollama_health', return_value=False):
-            response = client.get("/health")
-            data = response.json()
-            assert data["status"] == "degraded"
-            assert data["ollama_available"] is False
+            with patch('fastapi_app.api.routes.check_redis_health', return_value=True):
+                response = client.get("/health")
+                data = response.json()
+                assert data["status"] == "unhealthy"
+                assert data["ollama_available"] is False
+
+    def test_health_check_shows_redis_status(self):
+        """Health check should report Redis availability."""
+        with patch('fastapi_app.api.routes.check_ollama_health', return_value=True):
+            with patch('fastapi_app.api.routes.check_redis_health', return_value=False):
+                response = client.get("/health")
+                data = response.json()
+                assert "redis_available" in data
+                assert data["status"] == "degraded"
 
 
 class TestHarvestEndpoint:
@@ -54,7 +67,7 @@ class TestHarvestEndpoint:
 
     def setup_method(self):
         """Clear task store before each test."""
-        _task_store.clear()
+        clear_tasks()
 
     def test_harvest_post_returns_task_id(self):
         """POST /harvest should return a task_id."""
@@ -81,6 +94,15 @@ class TestHarvestEndpoint:
         )
         assert response.status_code == 422
 
+    def test_harvest_post_rejects_whitespace_source(self):
+        """POST /harvest should reject whitespace-only source."""
+        response = client.post(
+            "/harvest",
+            json={"source": "   ", "query": "test"}
+        )
+        assert response.status_code == 400
+        assert "empty or whitespace" in response.json()["detail"]
+
     def test_harvest_get_returns_task(self):
         """GET /harvest/{task_id} should return task details."""
         # Create a task directly
@@ -100,12 +122,40 @@ class TestHarvestEndpoint:
         assert response.status_code == 404
 
 
+class TestInputValidation:
+    """Tests for input validation and sanitization."""
+
+    def setup_method(self):
+        """Clear task store before each test."""
+        clear_tasks()
+
+    def test_rejects_oversized_source(self):
+        """Should reject source exceeding max length."""
+        oversized_source = "x" * 60000  # Exceeds 50KB default
+        response = client.post(
+            "/harvest",
+            json={"source": oversized_source, "query": "test"}
+        )
+        assert response.status_code == 400
+        assert "exceeds maximum length" in response.json()["detail"]
+
+    def test_rejects_oversized_query(self):
+        """Should reject query exceeding max length."""
+        oversized_query = "x" * 2000  # Exceeds 1000 char default
+        response = client.post(
+            "/harvest",
+            json={"source": "test data", "query": oversized_query}
+        )
+        assert response.status_code == 400
+        assert "exceeds maximum length" in response.json()["detail"]
+
+
 class TestTaskStore:
     """Tests for the task store service."""
 
     def setup_method(self):
         """Clear task store before each test."""
-        _task_store.clear()
+        clear_tasks()
 
     def test_create_task_returns_uuid(self):
         """create_task should return a UUID string."""
@@ -190,7 +240,7 @@ class TestTasksEndpoint:
 
     def setup_method(self):
         """Clear task store before each test."""
-        _task_store.clear()
+        clear_tasks()
 
     def test_list_tasks_empty(self):
         """GET /tasks should return empty list when no tasks."""
@@ -210,6 +260,24 @@ class TestTasksEndpoint:
         data = response.json()
         assert data["count"] == 2
         assert len(data["tasks"]) == 2
+
+
+class TestAuthEndpoint:
+    """Tests for authentication endpoints."""
+
+    def test_auth_status_returns_disabled_by_default(self):
+        """GET /auth/status should show auth disabled when no API_KEYS."""
+        response = client.get("/auth/status")
+        assert response.status_code == 200
+        data = response.json()
+        assert data["auth_enabled"] is False
+
+    def test_auth_status_with_api_keys(self):
+        """GET /auth/status should show auth enabled when API_KEYS set."""
+        with patch('fastapi_app.core.auth.API_KEYS', ['test-key']):
+            with patch('fastapi_app.api.routes.is_auth_enabled', return_value=True):
+                response = client.get("/auth/status")
+                assert response.status_code == 200
 
 
 if __name__ == "__main__":
