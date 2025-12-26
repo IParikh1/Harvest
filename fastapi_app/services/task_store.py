@@ -75,13 +75,24 @@ def _deserialize_task(data: str) -> Dict[str, Any]:
     return task
 
 
-def create_task(source: str, query: str) -> str:
+def create_task(
+    source: str,
+    query: str,
+    model: Optional[str] = None,
+    timeout: Optional[int] = None,
+    output_format: str = "text",
+    callback_url: Optional[str] = None
+) -> str:
     """
     Create a new task and return its ID.
 
     Args:
         source: The data source
         query: The query to analyze
+        model: Model to use for inference
+        timeout: Request timeout in seconds
+        output_format: Output format ('text' or 'json')
+        callback_url: Webhook URL to notify on completion
 
     Returns:
         task_id: Unique identifier for the task
@@ -92,10 +103,16 @@ def create_task(source: str, query: str) -> str:
         "status": TaskStatus.PENDING,
         "source": source,
         "query": query,
+        "model": model,
+        "timeout": timeout,
+        "output_format": output_format,
+        "callback_url": callback_url,
         "result": None,
+        "result_json": None,
         "error": None,
         "created_at": datetime.utcnow(),
-        "completed_at": None
+        "completed_at": None,
+        "processing_time_ms": None
     }
 
     redis_client = _get_redis()

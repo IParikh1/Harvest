@@ -280,5 +280,195 @@ class TestAuthEndpoint:
                 assert response.status_code == 200
 
 
+class TestP1Features:
+    """Tests for P1 features: model selection, timeout, JSON output, batch, webhooks."""
+
+    def setup_method(self):
+        """Clear task store before each test."""
+        clear_tasks()
+
+    def test_harvest_with_model_parameter(self):
+        """POST /harvest should accept model parameter."""
+        with patch('fastapi_app.api.routes.process_harvest_task'):
+            response = client.post(
+                "/harvest",
+                json={
+                    "source": "test data",
+                    "query": "test query",
+                    "model": "llama3.2:1b"
+                }
+            )
+            assert response.status_code == 200
+            data = response.json()
+            assert "task_id" in data
+
+    def test_harvest_with_timeout_parameter(self):
+        """POST /harvest should accept timeout parameter."""
+        with patch('fastapi_app.api.routes.process_harvest_task'):
+            response = client.post(
+                "/harvest",
+                json={
+                    "source": "test data",
+                    "query": "test query",
+                    "timeout": 120
+                }
+            )
+            assert response.status_code == 200
+
+    def test_harvest_with_json_output_format(self):
+        """POST /harvest should accept output_format parameter."""
+        with patch('fastapi_app.api.routes.process_harvest_task'):
+            response = client.post(
+                "/harvest",
+                json={
+                    "source": "test data",
+                    "query": "test query",
+                    "output_format": "json"
+                }
+            )
+            assert response.status_code == 200
+
+    def test_harvest_with_callback_url(self):
+        """POST /harvest should accept callback_url parameter."""
+        with patch('fastapi_app.api.routes.process_harvest_task'):
+            response = client.post(
+                "/harvest",
+                json={
+                    "source": "test data",
+                    "query": "test query",
+                    "callback_url": "https://example.com/webhook"
+                }
+            )
+            assert response.status_code == 200
+
+    def test_batch_harvest_endpoint(self):
+        """POST /harvest/batch should create multiple tasks."""
+        with patch('fastapi_app.api.routes.process_harvest_task'):
+            response = client.post(
+                "/harvest/batch",
+                json={
+                    "requests": [
+                        {"source": "data 1", "query": "query 1"},
+                        {"source": "data 2", "query": "query 2"},
+                        {"source": "data 3", "query": "query 3"}
+                    ]
+                }
+            )
+            assert response.status_code == 200
+            data = response.json()
+            assert data["count"] == 3
+            assert len(data["task_ids"]) == 3
+
+    def test_batch_harvest_validates_max_requests(self):
+        """POST /harvest/batch should reject more than 10 requests."""
+        requests_list = [{"source": f"data {i}", "query": f"query {i}"} for i in range(11)]
+        response = client.post(
+            "/harvest/batch",
+            json={"requests": requests_list}
+        )
+        assert response.status_code == 422  # Validation error
+
+    def test_models_endpoint(self):
+        """GET /models should return list of models."""
+        mock_models = [
+            {"name": "llama3.2:1b", "size": 1300000000, "modified_at": "2024-01-01"},
+            {"name": "mistral:7b", "size": 4100000000, "modified_at": "2024-01-02"}
+        ]
+        with patch('fastapi_app.api.routes.list_ollama_models', return_value=mock_models):
+            response = client.get("/models")
+            assert response.status_code == 200
+            data = response.json()
+            assert data["count"] == 2
+            assert len(data["models"]) == 2
+            assert "default_model" in data
+
+    def test_models_endpoint_when_ollama_unavailable(self):
+        """GET /models should return 503 when Ollama is unavailable."""
+        from fastapi_app.services.llm_service import LLMServiceError
+        with patch('fastapi_app.api.routes.list_ollama_models', side_effect=LLMServiceError("Cannot connect")):
+            response = client.get("/models")
+            assert response.status_code == 503
+
+    def test_task_result_includes_new_fields(self):
+        """Task result should include new P1 fields."""
+        # Create task with new parameters
+        task_id = create_task(
+            source="test",
+            query="test",
+            model="llama3.2:1b",
+            timeout=60,
+            output_format="json"
+        )
+
+        response = client.get(f"/harvest/{task_id}")
+        assert response.status_code == 200
+        data = response.json()
+        assert data["task_id"] == task_id
+        assert data["model"] == "llama3.2:1b"
+
+
+class TestLLMServiceP1:
+    """Tests for LLM service P1 features."""
+
+    def test_run_ollama_with_timeout(self):
+        """run_ollama should respect timeout parameter."""
+        mock_response = MagicMock()
+        mock_response.json.return_value = {"response": "test response"}
+        mock_response.raise_for_status = MagicMock()
+
+        with patch('requests.post', return_value=mock_response) as mock_post:
+            from fastapi_app.services.llm_service import run_ollama
+            result = run_ollama("test prompt", timeout=30)
+            assert result == "test response"
+            # Verify timeout was passed
+            mock_post.assert_called_once()
+            assert mock_post.call_args[1]["timeout"] == 30
+
+    def test_run_ollama_with_json_format(self):
+        """run_ollama should request JSON format when specified."""
+        mock_response = MagicMock()
+        mock_response.json.return_value = {"response": '{"key": "value"}'}
+        mock_response.raise_for_status = MagicMock()
+
+        with patch('requests.post', return_value=mock_response) as mock_post:
+            from fastapi_app.services.llm_service import run_ollama
+            result = run_ollama("test prompt", json_format=True)
+            # Verify format was passed in payload
+            call_json = mock_post.call_args[1]["json"]
+            assert call_json.get("format") == "json"
+
+    def test_parse_json_response_valid(self):
+        """parse_json_response should parse valid JSON."""
+        from fastapi_app.services.llm_service import parse_json_response
+        result = parse_json_response('{"key": "value", "number": 42}')
+        assert result == {"key": "value", "number": 42}
+
+    def test_parse_json_response_code_block(self):
+        """parse_json_response should extract JSON from code blocks."""
+        from fastapi_app.services.llm_service import parse_json_response
+        result = parse_json_response('Here is the result:\n```json\n{"key": "value"}\n```')
+        assert result == {"key": "value"}
+
+    def test_parse_json_response_invalid(self):
+        """parse_json_response should return None for invalid JSON."""
+        from fastapi_app.services.llm_service import parse_json_response
+        result = parse_json_response('This is not JSON at all')
+        assert result is None
+
+    def test_list_ollama_models(self):
+        """list_ollama_models should return model list."""
+        mock_response = MagicMock()
+        mock_response.json.return_value = {
+            "models": [{"name": "llama3.2:1b"}, {"name": "mistral:7b"}]
+        }
+        mock_response.raise_for_status = MagicMock()
+
+        with patch('requests.get', return_value=mock_response):
+            from fastapi_app.services.llm_service import list_ollama_models
+            models = list_ollama_models()
+            assert len(models) == 2
+            assert models[0]["name"] == "llama3.2:1b"
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])
