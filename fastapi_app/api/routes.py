@@ -2,6 +2,8 @@
 import logging
 from typing import Optional
 from fastapi import APIRouter, HTTPException, BackgroundTasks, Depends, Request
+from slowapi import Limiter
+from slowapi.util import get_remote_address
 from fastapi_app.models.schemas import (
     HarvestRequest,
     HarvestResponse,
@@ -19,11 +21,22 @@ from fastapi_app.services.task_store import (
     _get_redis
 )
 from fastapi_app.services.llm_service import run_llm, check_ollama_health, LLMServiceError
-from fastapi_app.core.config import API_VERSION, MAX_SOURCE_LENGTH, MAX_QUERY_LENGTH
+from fastapi_app.core.config import API_VERSION, MAX_SOURCE_LENGTH, MAX_QUERY_LENGTH, RATE_LIMIT
 from fastapi_app.core.auth import verify_api_key, is_auth_enabled
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
+
+
+def get_rate_limit_key(request: Request) -> str:
+    """Get rate limit key from API key or IP."""
+    api_key = request.headers.get("X-API-Key")
+    if api_key:
+        return f"api_key:{api_key}"
+    return get_remote_address(request)
+
+
+limiter = Limiter(key_func=get_rate_limit_key)
 
 
 def validate_input(source: str, query: str) -> None:
@@ -98,8 +111,10 @@ Provide a clear, concise analysis based on the data provided."""
 
 
 @router.post("/harvest", response_model=HarvestResponse, tags=["Harvest"])
+@limiter.limit(RATE_LIMIT)
 async def run_harvest(
-    request: HarvestRequest,
+    request: Request,
+    harvest_request: HarvestRequest,
     background_tasks: BackgroundTasks,
     api_key: Optional[str] = Depends(verify_api_key)
 ):
@@ -112,19 +127,19 @@ async def run_harvest(
     Requires API key authentication if API_KEYS is configured.
     """
     # Validate input
-    validate_input(request.source, request.query)
+    validate_input(harvest_request.source, harvest_request.query)
 
-    logger.info(f"Received harvest request: query='{request.query[:50]}...'")
+    logger.info(f"Received harvest request: query='{harvest_request.query[:50]}...'")
 
     # Create task
-    task_id = create_task(request.source, request.query)
+    task_id = create_task(harvest_request.source, harvest_request.query)
 
     # Queue background processing
     background_tasks.add_task(
         process_harvest_task,
         task_id,
-        request.source,
-        request.query
+        harvest_request.source,
+        harvest_request.query
     )
 
     return HarvestResponse(
@@ -135,7 +150,9 @@ async def run_harvest(
 
 
 @router.get("/harvest/{task_id}", response_model=TaskResult, tags=["Harvest"])
+@limiter.limit(RATE_LIMIT)
 async def get_harvest_result(
+    request: Request,
     task_id: str,
     api_key: Optional[str] = Depends(verify_api_key)
 ):
@@ -156,7 +173,9 @@ async def get_harvest_result(
 
 
 @router.get("/tasks", tags=["Tasks"])
+@limiter.limit(RATE_LIMIT)
 async def list_all_tasks(
+    request: Request,
     limit: int = 20,
     api_key: Optional[str] = Depends(verify_api_key)
 ):
